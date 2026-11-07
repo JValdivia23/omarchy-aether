@@ -1,0 +1,18 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  qt:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install Qt and thumbnail tools
+        run: pacman -Syu --noconfirm git qt6-base qt6-declarative qt6-wayland libvips matugen
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bin/build
+      - name: Test the backend and real QML offscreen
+        run: bin/test

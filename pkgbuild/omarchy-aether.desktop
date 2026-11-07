@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Aether Palette
+Name[da]=Aether-farvepalet
+Name[es_MX]=Paleta Aether
+Comment=Preview and validate wallpaper-adaptive Omarchy system colors
+Comment[da]=Forhåndsvis og validér Omarchys farver ud fra baggrundsbilleder
+Comment[es_MX]=Previsualiza y valida los colores de Omarchy a partir de tu fondo
+Exec=omarchy-aether open %f
+Icon=omarchy-aether
+Terminal=false
+Categories=Utility;
+StartupWMClass=omarchy-aether
+MimeType=image/jpeg;image/png;image/webp;

@@ -1,0 +1,26 @@
+pkgname=omarchy-aether
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Wallpaper-adaptive Omarchy palettes with verified contrast and a cached native carousel'
+arch=('x86_64' 'aarch64')
+url='https://github.com/JValdivia23/omarchy-aether'
+license=('MIT')
+options=('!debug')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'xdg-desktop-portal' 'matugen' 'libvips')
+optdepends=('omarchy: native theme application and wallpaper carousel')
+makedepends=('gcc' 'make')
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 build/omarchy-aether "$pkgdir/usr/bin/omarchy-aether"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$startdir/omarchy-aether.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/omarchy-aether.svg"
+  install -Dm644 "$startdir/omarchy-aether.desktop" "$pkgdir/usr/share/applications/omarchy-aether.desktop"
+}
