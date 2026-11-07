@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "catalog.h"
 #include "generator.h"
+#include "huerotation.h"
 #include "menuintegration.h"
 #include "picker.h"
 #include "storage.h"
@@ -15,6 +16,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTextStream>
+#include <cmath>
 
 namespace {
 void printJson(const QJsonObject &value) { QTextStream(stdout) << QJsonDocument(value).toJson(QJsonDocument::Indented); }
@@ -35,6 +37,7 @@ int runCli() {
                        {"fragment", "Native menu integration fragment (optional).", "path"},
                        {"count", "Number of random candidates, excluding the pinned wallpaper (1–200).", "number", "35"},
                        {"source-index", "Matugen source candidate index (0–3).", "number", "0"},
+                       {"hue-rotation", "Experimental hue rotation, 0–1; generate only, never applied.", "strength"},
                        {"preload", "Preload prepared rows into the running Omarchy shell."},
                        {"apply", "Apply the wallpaper chosen in the native picker."},
                        {"yes", "Confirm changing the active Omarchy theme."},
@@ -56,6 +59,14 @@ int runCli() {
     bool countOk = false, indexOk = false;
     const int count = parser.value("count").toInt(&countOk), sourceIndex = parser.value("source-index").toInt(&indexOk);
     if (!countOk || count < 1 || count > 200 || !indexOk || sourceIndex < 0 || sourceIndex > 3) return fail("Invalid batch size or source color index.");
+    double rotationStrength = 0;
+    if (parser.isSet("hue-rotation")) {
+        if (command != "generate") return fail("Experimental hue rotation is preview/export only; use generate, not apply or the native picker.");
+        bool strengthOk = false;
+        rotationStrength = parser.value("hue-rotation").toDouble(&strengthOk);
+        if (!strengthOk || !std::isfinite(rotationStrength) || rotationStrength < 0 || rotationStrength > 1)
+            return fail("Hue rotation strength must be between 0 and 1.");
+    }
     auto generate = [&]() {
         if (parser.isSet("seed")) {
             if (!QRegularExpression("^#[0-9a-fA-F]{6}$").match(parser.value("seed")).hasMatch()) { error = "Seed must be a six-digit hex color."; return Palette(); }
@@ -86,10 +97,19 @@ int runCli() {
 
     if (command == "generate" || command == "apply") {
         if (command == "apply" && !parser.isSet("yes") && !parser.isSet("stage-only")) return fail("Applying changes the desktop. Re-run with --yes, or export with --stage-only.");
-        const auto palette = generate();
+        auto palette = generate();
         if (!error.isEmpty()) return fail(error);
+        QJsonObject experiment;
+        if (parser.isSet("hue-rotation")) {
+            const auto targets = parser.isSet("seed") ? QList<QColor>{QColor(parser.value("seed"))}
+                                                     : HueRotation::sampleFile(parser.value("image"), &error);
+            if (!error.isEmpty()) return fail(error);
+            palette = HueRotation::rotate(palette, targets, rotationStrength, &error, &experiment);
+            if (!error.isEmpty()) return fail(error);
+        }
         auto report = palette.report();
         if (!report.value("valid").toBool()) return fail("Palette validation failed.");
+        if (!experiment.isEmpty()) report["experiment"] = experiment;
         if (parser.isSet("output") && !Storage::write(parser.value("output"), palette.toml(), &error)) return fail(error);
         if (command == "apply") {
             const QString config = QDir(parser.value("config-dir")).absolutePath();

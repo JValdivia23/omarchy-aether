@@ -10,6 +10,7 @@
 - Matugen must always run with `--dry-run`; a user's Matugen configuration may otherwise execute hooks or set wallpapers.
 - Color policy: at least 7:1 body contrast on base, 4.5:1 for every text token on base/raised/selection, 16 distinct ANSI entries, six distinguishable semantic families, and distinct regular/bright pairs. Test the rounded, gamut-mapped sRGB values, not theoretical colors.
 - Wallpaper tint may influence surfaces and accents but must not collapse red/green/amber/blue/violet/cyan into a dominant wallpaper hue. Tokyo Night is the diversity reference; no OpenCode-specific theme/configuration belongs here.
+- The experimental `generate --hue-rotation 0–1` path is preview/export only. Keep `Palette::create`, native menu generation, and installed defaults unchanged. Never allow the experimental flag on apply/staging/picker commands without a separate approved design.
 - Thumbnails are persistent, source-keyed previews. Batches use a shuffled deck, pin the current wallpaper, and stay fixed while browsing. Unique stable aliases avoid Omarchy's basename deduplication. No whole-library scan belongs on the warm-open path.
 - Theme watching must survive directory/file replacement. Follow Omarchy's effective rounding, locale, translations, and RTL direction. All visible prose uses qsTr/tr and plain-text rendering.
 - Add Qt Test coverage after backend changes. Run the real QML offscreen for interactions and screenshots; use synthetic content, never private files. Keep the Omacut/template MIT attribution.

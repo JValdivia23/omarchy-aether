@@ -54,6 +54,21 @@ omarchy-aether generate --seed '#7aa2f7' --json
 
 All headless commands accept `--json`, exit 0 on success or 1 on failure, and report errors on stderr. A failing `check` still emits the full JSON check report. Contrast ratios describe opaque sRGB color pairs, not a certification of every application's derived/translucent colors. The color-separation floor is an engineering guardrail, not a guarantee for every form of color-vision deficiency.
 
+### Preview-only hue-rotation experiment
+
+The experimental branch adds an explicit option to the local development binary:
+
+```sh
+build/omarchy-aether generate --image /path/wallpaper.jpg --hue-rotation 0.5 --output /path/gentle.toml --json
+build/omarchy-aether generate --image /path/wallpaper.jpg --hue-rotation 1 --output /path/stronger.toml --json
+```
+
+This rotates the existing Tokyo Night–like color families toward up to three main **sampled wallpaper hues**, rather than replacing the palette with Material colors. An explicit `--seed` uses that color as its single target instead. Surfaces, neutral text, and the accent remain byte-for-byte unchanged, so comparisons isolate the semantic-color adjustment. Distant families are untouched; regular/bright pairs rotate together. Lightness and chroma are retained unless gamut mapping or contrast requires a small correction.
+
+Proposed full-strength rotation is bounded to 24° per role and automatically reduced until the rounded sRGB colors pass all normal checks, preserve their circular hue order and gaps of at least the greater of 28° or 65% of the original gap, retain at least 80% of every semantic pair's original perceptual distance, and retain at least 80% of their chroma. Lightness changes cannot exceed 0.025 in OKLab. Strength 0–1 selects a fraction of that safe full-strength bound; it is not a promise of a 24° change. The report measures actual hue changes after gamut mapping and hex rounding. Gray/near-neutral images retain the base colors instead of inventing a dominant hue. Sampling ignores mostly transparent pixels and uses a small sRGB preview; its targets are heuristic, not an exact census of image colors.
+
+JSON includes the actual targets, per-role rotations, target distances, and the safety scale. **The option is accepted only by `generate`**: application, staging, the native menus, and the GUI remain on the unchanged production policy. Default generation and `--hue-rotation 0` preserve the production palette exactly. There is no setting to enable the experiment globally, and building/testing does not install it.
+
 ## Use Omarchy's normal menus
 
 Stage a first wallpaper and palette without activating them, then explicitly enable the native Background menu integration:

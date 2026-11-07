@@ -2,6 +2,7 @@
 #include "catalog.h"
 #include "colorutils.h"
 #include "generator.h"
+#include "huerotation.h"
 #include "menuintegration.h"
 #include "picker.h"
 #include "storage.h"
@@ -24,6 +25,8 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <cmath>
+#include <limits>
 
 class FakeFilePicker : public FilePicker {
 public:
@@ -90,6 +93,140 @@ private slots:
                 QVERIFY2(report.value("valid").toBool(), qPrintable(QString(seed) + "/" + surface + ": " + QJsonDocument(report).toJson(QJsonDocument::Compact)));
             }
         }
+    }
+    void zeroHueRotationKeepsTheProductionPaletteExactly() {
+        const auto base = Palette::create(QColor("#7aa2f7"));
+        QString error;
+        QJsonObject details;
+        const auto result = HueRotation::rotate(base, {QColor("#e57c45")}, 0, &error, &details);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(result.toml(), base.toml());
+        QCOMPARE(result.source, base.source);
+        QVERIFY(details.value("retained_baseline").toBool());
+        QCOMPARE(Palette::create(QColor("#7aa2f7")).colors, base.colors);
+    }
+    void experimentalRotationPreservesContrastAndDiversityAcrossHues() {
+        for (int hue = 0; hue < 360; hue += 5) {
+            for (double strength : {.5, 1.0}) {
+                const QColor seed = QColor::fromHsv(hue, 200, 220);
+                const auto base = Palette::create(seed, hue % 2 ? Qt::white : Qt::black);
+                QString error;
+                QJsonObject details;
+                const auto palette = HueRotation::rotate(base, {seed, QColor::fromHsv((hue + 145) % 360, 160, 200)}, strength, &error, &details);
+                QVERIFY2(error.isEmpty(), qPrintable(error));
+                QVERIFY2(palette.report().value("valid").toBool(), qPrintable(QString::number(hue) + ": " + QJsonDocument(palette.report()).toJson(QJsonDocument::Compact)));
+                for (const auto &name : {"background", "dark_background", "darker_background", "lighter_background", "selection",
+                                         "foreground", "light_foreground", "bright_foreground", "dark_foreground", "muted", "accent"})
+                    QCOMPARE(palette.colors.value(name), base.colors.value(name));
+                for (const auto &entry : details.value("rotations").toArray()) {
+                    const auto row = entry.toObject();
+                    QVERIFY(std::abs(row.value("rotation_degrees").toDouble()) <= 24 * strength + .5);
+                    if (row.contains("target"))
+                        QVERIFY(row.value("distance_after_degrees").toDouble() <= row.value("distance_before_degrees").toDouble() + .5);
+                }
+                for (const auto &name : Palette::chromaticNames()) {
+                    const auto before = Color::toLch(QColor(base.colors.value(name))), after = Color::toLch(QColor(palette.colors.value(name)));
+                    QVERIFY(std::abs(before.l - after.l) <= .025);
+                    QVERIFY(after.c >= .80 * before.c);
+                    const auto bright = Color::toLch(QColor(palette.colors.value("bright_" + name)));
+                    QVERIFY2(std::abs(std::remainder(after.h - bright.h, 360.0)) < 1.5,
+                             qPrintable(QString("%1/%2: regular %3, bright %4").arg(hue).arg(name).arg(after.h).arg(bright.h)));
+                }
+            }
+        }
+    }
+    void relatedHueRotationsBackOffRatherThanCollide() {
+        const auto base = Palette::create(QColor("#7aa2f7"));
+        const auto target = Color::fromLch({.70, .12, 280});
+        QString error;
+        QJsonObject details;
+        const auto result = HueRotation::rotate(base, {target}, 1, &error, &details);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(details.value("safety_scale").toDouble() > 0);
+        QVERIFY(details.value("safety_scale").toDouble() < 1);
+        QVERIFY(!details.value("retained_baseline").toBool());
+        const auto gentle = HueRotation::rotate(base, {target}, .5, &error);
+        QVERIFY(gentle.colors != result.colors);
+        QVERIFY(gentle.colors != base.colors);
+        const QStringList order{"red", "yellow", "green", "cyan", "blue", "magenta"};
+        for (int i = 0; i < order.size(); ++i) {
+            const auto a = Color::toLch(QColor(result.colors.value(order[i])));
+            const auto b = Color::toLch(QColor(result.colors.value(order[(i + 1) % order.size()])));
+            const double gap = std::fmod(b.h - a.h + 360, 360);
+            QVERIFY(gap >= 28 && gap < 180);
+            for (int j = i + 1; j < order.size(); ++j)
+                QVERIFY(Color::distance(QColor(result.colors.value(order[i])), QColor(result.colors.value(order[j])))
+                        >= .80 * Color::distance(QColor(base.colors.value(order[i])), QColor(base.colors.value(order[j]))));
+        }
+        QCOMPARE(result.colors.value("green"), base.colors.value("green"));
+        QCOMPARE(result.colors.value("yellow"), base.colors.value("yellow"));
+    }
+    void monochromeTargetsDoNotRotateColors() {
+        const auto base = Palette::create(QColor("#777777"));
+        QString error;
+        QJsonObject details;
+        for (const auto &targets : {QList<QColor>{}, QList<QColor>{Qt::black, Qt::white, QColor("#777777")}}) {
+            const auto result = HueRotation::rotate(base, targets, 1, &error, &details);
+            QVERIFY2(error.isEmpty(), qPrintable(error));
+            QCOMPARE(result.colors, base.colors);
+            QVERIFY(details.value("targets").toArray().isEmpty());
+            QVERIFY(details.value("retained_baseline").toBool());
+        }
+    }
+    void invalidHueRotationInputsAreRejected() {
+        QString error;
+        const auto base = Palette::create(QColor("#7aa2f7"));
+        for (double strength : {-1.0, 1.1, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+            QVERIFY(HueRotation::rotate(base, {Qt::red}, strength, &error).colors.isEmpty());
+            QVERIFY(error.contains("between 0 and 1"));
+            error.clear();
+        }
+        QVERIFY(HueRotation::rotate({}, {Qt::red}, .5, &error).colors.isEmpty());
+        QVERIFY(error.contains("valid base"));
+    }
+    void wallpaperHueSamplingFindsBothMainFamilies() {
+        QImage wallpaper(192, 96, QImage::Format_RGB32);
+        wallpaper.fill(QColor("#777777"));
+        QPainter painter(&wallpaper);
+        const QColor warm("#c87943"), cool("#457ca0");
+        painter.fillRect(0, 0, 80, 96, warm);
+        painter.fillRect(80, 0, 80, 96, cool);
+        painter.end();
+        wallpaper.setPixelColor(191, 0, QColor("#ff00ff"));
+        const auto targets = HueRotation::sample(wallpaper);
+        QCOMPARE(targets.size(), 2);
+        for (const auto &expected : {warm, cool}) {
+            bool found = false;
+            for (const auto &target : targets)
+                found |= std::abs(std::remainder(Color::toLch(target).h - Color::toLch(expected).h, 360.0)) < 5;
+            QVERIFY(found);
+        }
+        QCOMPARE(HueRotation::sample(wallpaper), targets);
+    }
+    void wallpaperSamplingHandlesNeutralTransparentAndWrappedHues() {
+        QImage neutral(192, 96, QImage::Format_ARGB32);
+        neutral.fill(QColor("#777777"));
+        QVERIFY(HueRotation::sample(neutral).isEmpty());
+        neutral.setPixelColor(0, 0, Qt::red);
+        QVERIFY(HueRotation::sample(neutral).isEmpty());
+        neutral.fill(QColor(255, 0, 0, 0));
+        QVERIFY(HueRotation::sample(neutral).isEmpty());
+        QVERIFY(HueRotation::sample(QImage()).isEmpty());
+        QPainter painter(&neutral);
+        painter.fillRect(0, 0, 96, 96, Color::fromLch({.7, .15, 358}));
+        painter.fillRect(96, 0, 96, 96, Color::fromLch({.7, .15, 2}));
+        painter.end();
+        const auto targets = HueRotation::sample(neutral);
+        QCOMPARE(targets.size(), 1);
+        QVERIFY(std::abs(std::remainder(Color::toLch(targets.first()).h, 360.0)) < 2);
+        QString error;
+        QTemporaryDir temp;
+        QVERIFY(HueRotation::sampleFile(temp.filePath("missing.png"), &error).isEmpty());
+        QVERIFY(error.contains("Cannot sample"));
+        error.clear();
+        QVERIFY(neutral.save(temp.filePath("wrapped.png")));
+        QCOMPARE(HueRotation::sampleFile(temp.filePath("wrapped.png"), &error), targets);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
     }
     void paletteRoundTrip() {
         const auto palette = Palette::create(QColor("#d699b6"));
@@ -568,6 +705,64 @@ private slots:
         QVERIFY(QJsonDocument::fromJson(output).object().value("valid").toBool());
         QVERIFY(!Storage::run(binary, {"apply", "--seed", "#ff66aa", "--json"}, &output, &error));
         QVERIFY(error.contains("--yes"));
+    }
+    void experimentalCliIsOptInAndCannotApplyOrStage() {
+        QTemporaryDir temp;
+        const QString binary = QCoreApplication::applicationDirPath() + "/../omarchy-aether";
+        QByteArray output;
+        QString error;
+        const QStringList args{"generate", "--seed", "#d57c39", "--json", "--cache-dir", temp.filePath("cache")};
+        QVERIFY2(Storage::run(binary, args, &output, &error), qPrintable(error));
+        const auto baseline = QJsonDocument::fromJson(output).object();
+        QVERIFY(!baseline.contains("experiment"));
+        QVERIFY2(Storage::run(binary, args + QStringList{"--hue-rotation", "0"}, &output, &error), qPrintable(error));
+        QCOMPARE(QJsonDocument::fromJson(output).object().value("colors"), baseline.value("colors"));
+        QVERIFY2(Storage::run(binary, args + QStringList{"--hue-rotation", "1", "--output", temp.filePath("colors.toml")}, &output, &error), qPrintable(error));
+        const auto experiment = QJsonDocument::fromJson(output).object();
+        QVERIFY(experiment.value("valid").toBool());
+        QVERIFY(experiment.contains("experiment"));
+        QVERIFY(experiment.value("colors") != baseline.value("colors"));
+        QVERIFY(QFileInfo::exists(temp.filePath("colors.toml")));
+        for (const QString command : {"apply", "pick", "background", "integrate"}) {
+            error.clear();
+            QVERIFY(!Storage::run(binary, {command, "--seed", "#d57c39", "--hue-rotation", "1", "--yes", "--stage-only", "--json",
+                                          "--config-dir", temp.filePath("config")}, &output, &error));
+            QVERIFY2(error.contains("preview/export only"), qPrintable(error));
+            QVERIFY(!QFileInfo::exists(temp.filePath("config")));
+        }
+        for (const QString strength : {"-0.1", "1.1", "nan", "inf", "not-a-number"}) {
+            error.clear();
+            QVERIFY(!Storage::run(binary, args + QStringList{"--hue-rotation", strength}, &output, &error));
+            QVERIFY2(error.contains("between 0 and 1"), qPrintable(error));
+        }
+    }
+    void experimentalImageCliUsesWallpaperHuesWithoutChangingState() {
+        QTemporaryDir temp;
+        const QString binary = QCoreApplication::applicationDirPath() + "/../omarchy-aether";
+        const QString wallpaper = temp.filePath("sample.png"), tools = temp.filePath("tools");
+        image(wallpaper, QColor("#c87943"));
+        executable(tools + "/matugen", "#!/bin/sh\nif [ \"$1\" = --version ]; then echo v4; else printf '%s' '" + matugenJson("#457ca0") + "'; fi\n");
+        QString error;
+        const auto original = Storage::read(wallpaper, &error);
+        QProcess process;
+        auto env = QProcessEnvironment::systemEnvironment();
+        env.insert("PATH", tools + ":" + env.value("PATH"));
+        env.insert("XDG_CONFIG_HOME", temp.filePath("config"));
+        env.insert("XDG_STATE_HOME", temp.filePath("state"));
+        env.insert("XDG_CACHE_HOME", temp.filePath("cache"));
+        process.setProcessEnvironment(env);
+        process.start(binary, {"generate", "--image", wallpaper, "--hue-rotation", "1", "--json"});
+        QVERIFY(process.waitForFinished(10000));
+        QVERIFY2(process.exitCode() == 0, process.readAllStandardError().constData());
+        const auto report = QJsonDocument::fromJson(process.readAllStandardOutput()).object();
+        QVERIFY(report.value("valid").toBool());
+        QCOMPARE(report.value("source").toString(), QString("#457ca0"));
+        const auto targets = report.value("experiment").toObject().value("targets").toArray();
+        QCOMPARE(targets.size(), 1);
+        QCOMPARE(targets.first().toObject().value("color").toString(), QString("#c87943"));
+        QCOMPARE(Storage::read(wallpaper, &error), original);
+        QVERIFY(!QFileInfo::exists(temp.filePath("config/omarchy")));
+        QVERIFY(!QFileInfo::exists(temp.filePath("state/omarchy")));
     }
     void integrationCliUsesAnExplicitIsolatedConfigRoot() {
         QTemporaryDir temp;

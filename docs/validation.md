@@ -37,3 +37,19 @@ These are opaque sRGB measurements. Applications can derive additional colors or
 - The JSONC installer is tested for comments, literal comment-looking text inside strings, trailing commas, missing separators, backups, idempotence, malformed input, and protection of existing custom actions/symlinks.
 - The actual installed Omarchy JavaScript menu model is evaluated in Qt's JavaScript engine to verify the label, icon, aliases, and action after merging. That compatibility check is skipped on CI hosts without Omarchy; the portable metadata checks still run.
 - The native Background CLI is exercised with isolated state/config/cache roots and injected executables. Non-Aether themes follow the stock selector/setter path, and a theme change during Aether selection prevents unintended reactivation.
+
+## Preview-only hue rotation experiment
+
+The experimental run reports **52 passed, zero failed**, including the unchanged QML interaction/language checks. Added coverage includes 72 source hues with two strengths and two wallpaper targets, hue-wrap handling, actual rounded sRGB contrast and separation, coordinated regular/bright rotation, local influence, chroma/lightness bounds, neutral/transparent images, deterministic multi-hue sampling, and rejection of invalid/nonfinite strengths. The CLI rejects the experimental flag on apply, staging, native picker, and integration commands before they can change configuration.
+
+Three wallpapers from the existing library were compared at strengths 0, 0.5, and 1: a cool blue-on-slate graphic, a plum/amber mountain sunset, and warm desert dunes. The default output matched the installed production binary exactly for each image; the cool comparison baseline also matched the active system palette. All experiment caches, palettes, and visual comparisons stay outside the repository, and neither the installed executable nor active theme was modified.
+
+| Wallpaper | Body contrast (all strengths) | Lowest text contrast (all strengths) | Semantic distance, baseline → gentle → stronger |
+|---|---:|---:|---:|
+| Cool graphic | 9.41:1 | 4.83:1 | 9.28 → 8.37 → 7.56 |
+| Mountain sunset | 9.27:1 | 4.81:1 | 9.00 → 9.87 → 10.41 |
+| Desert dunes | 9.25:1 | 4.81:1 | 9.05 → 9.05 → 9.05 |
+
+Every palette has 16 unique ANSI entries. Distances are Euclidean OKLab × 100, with a minimum accepted value of 7.5. Full-strength rotation is safety-limited: approximately 8° for cyan/violet in the cool graphic and 9° for red/amber in the dunes. This is deliberately a modest adjustment, not evidence that all colors can be pulled arbitrarily close to a single wallpaper hue without losing diversity.
+
+An additional 12-category wallpaper sweep (abstract, calm, flowers, gruvbox, minimal, monochrome, mountain, nature, nord, outrun, painting, and stalenhag) passed all **24 generated palettes** at strengths 0.5 and 1. Observed minimums were 9.28:1 body contrast, 4.80:1 text contrast, and 7.51 semantic distance. The largest actual rotation in this sweep was 22.85°. These are separate real-image checks in addition to the 52 Qt Test results.
