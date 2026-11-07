@@ -2,6 +2,7 @@
 #include "catalog.h"
 #include "colorutils.h"
 #include "generator.h"
+#include "menuintegration.h"
 #include "picker.h"
 #include "storage.h"
 #include "theme.h"
@@ -11,6 +12,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJSEngine>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QQmlApplicationEngine>
@@ -57,6 +59,9 @@ private:
         return QJsonDocument(QJsonObject{{"colors", QJsonObject{
             {"source_color", QJsonObject{{"dark", QJsonObject{{"color", seed}}}}},
             {"surface", QJsonObject{{"dark", QJsonObject{{"color", "#1a1b26"}}}}}}}}).toJson(QJsonDocument::Compact);
+    }
+    static QByteArray menuFragment() {
+        return "{\"appearance.background\":{\"action\":\"omarchy-aether background\"}}";
     }
 
 private slots:
@@ -260,6 +265,130 @@ private slots:
         QVERIFY(!installer.stage({}, wallpaper, &error));
         QVERIFY(!QFileInfo::exists(installer.directory()));
     }
+    void themeProvidesANativeMenuPreview() {
+        QTemporaryDir temp;
+        const QString wallpaper = temp.filePath("landscape.png");
+        image(wallpaper, Qt::red);
+        ThemeInstaller installer(temp.filePath("config"));
+        const auto palette = Palette::create(QColor("#7aa2f7"));
+        QString error;
+        QVERIFY2(installer.stage(palette, wallpaper, &error), qPrintable(error));
+        QImage preview(installer.directory() + "/preview.png");
+        QCOMPARE(preview.size(), QSize(1536, 864));
+        QCOMPARE(preview.pixelColor(700, 100), QColor(Qt::red));
+        QCOMPARE(preview.pixelColor(96, 790), QColor(palette.colors.value("background")));
+        QCOMPARE(preview.pixelColor(288, 838), QColor(palette.colors.value("bright_red")));
+    }
+    void menuMergePreservesCommentsAndUnrelatedSettings() {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("menu.jsonc");
+        const QByteArray original = "{\n  // Keep this comment and the user's punctuation.\n  \"personal.notes\": {\"label\": \"https://example.test/a,} /* literal */\", \"action\": \"notes\",},\n  /* Keep this block. */\n}\n";
+        write(path, original);
+        QString error;
+        const auto result = MenuIntegration::install(path, menuFragment(), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(result.value("changed").toBool());
+        const auto text = Storage::read(path, &error);
+        QVERIFY(text.contains("// Keep this comment"));
+        QVERIFY(text.contains("/* Keep this block. */"));
+        const auto merged = MenuIntegration::parse(QString::fromUtf8(text), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(merged.value("personal.notes").toObject().value("action").toString(), QString("notes"));
+        QCOMPARE(merged.value("personal.notes").toObject().value("label").toString(), QString("https://example.test/a,} /* literal */"));
+        QCOMPARE(merged.value("appearance.background").toObject().value("action").toString(), QString("omarchy-aether background"));
+        QCOMPARE(Storage::read(result.value("backup").toString(), &error), original);
+    }
+    void menuMergeHandlesMissingCommaAndIsIdempotent() {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("menu.jsonc");
+        write(path, "{\"personal\": {\"label\": \"My tools\"}} // trailing comment with }\n");
+        QString error;
+        const auto first = MenuIntegration::install(path, menuFragment(), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(first.value("changed").toBool());
+        const auto contents = Storage::read(path, &error);
+        const auto second = MenuIntegration::install(path, menuFragment(), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(!second.value("changed").toBool());
+        QCOMPARE(Storage::read(path, &error), contents);
+        QCOMPARE(QDir(temp.path()).entryList({"*.before-aether-*"}, QDir::Files).size(), 1);
+    }
+    void menuMergeCreatesAUserMenuWithoutReplacingDefaults() {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("extensions/omarchy-menu.jsonc");
+        QString error;
+        const auto result = MenuIntegration::install(path, menuFragment(), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(result.value("changed").toBool());
+        QCOMPARE(MenuIntegration::parse(QString::fromUtf8(Storage::read(path, &error)), &error).size(), 1);
+        QVERIFY(result.value("backup").toString().isEmpty());
+    }
+    void menuMergeProtectsExistingCustomActionsAndSymlinks() {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("menu.jsonc"), link = temp.filePath("linked-menu.jsonc");
+        const QByteArray original = "{\"appearance.background\":{\"action\":\"my-background-tool\"}}";
+        write(path, original);
+        QString error;
+        QVERIFY(MenuIntegration::install(path, menuFragment(), &error).isEmpty());
+        QVERIFY(error.contains("preserved"));
+        error.clear();
+        QCOMPARE(Storage::read(path, &error), original);
+        QVERIFY(QFile::link(path, link));
+        QVERIFY(MenuIntegration::install(link, menuFragment(), &error).isEmpty());
+        QVERIFY(error.contains("symlink"));
+    }
+    void malformedMenusAndUnexpectedFragmentsAreRejected() {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("menu.jsonc");
+        write(path, "{ /* unterminated");
+        QString error;
+        QVERIFY(MenuIntegration::install(path, menuFragment(), &error).isEmpty());
+        QVERIFY(error.contains("Unterminated"));
+        error.clear();
+        QVERIFY(MenuIntegration::install(path, "{\"appearance.font\":{}}", &error).isEmpty());
+        QVERIFY(error.contains("only"));
+    }
+    void menuMergePreservesTheNativeRowMetadata() {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("menu.jsonc");
+        const QJsonObject native{{"label", "Background"}, {"icon", "image-icon"}, {"aliases", QJsonArray{"background", "wallpaper"}},
+                                {"description", "Native row metadata"}, {"action", "original-background-action"}};
+        QString error;
+        const auto result = MenuIntegration::install(path, menuFragment(), &error, native);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(result.value("changed").toBool());
+        const auto row = MenuIntegration::parse(QString::fromUtf8(Storage::read(path, &error)), &error).value("appearance.background").toObject();
+        QJsonObject expected = native;
+        expected["action"] = "omarchy-aether background";
+        QCOMPARE(row, expected);
+    }
+    void installedOmarchyModelKeepsTheBackgroundLabelIconAndAliases() {
+        const QString root = qEnvironmentVariable("OMARCHY_PATH", "/usr/share/omarchy");
+        const QString modelPath = root + "/shell/plugins/menu/MenuModel.js";
+        const QString defaultsPath = root + "/default/omarchy/omarchy-menu.jsonc";
+        if (!QFileInfo::exists(modelPath) || !QFileInfo::exists(defaultsPath)) QSKIP("Omarchy is not installed in this isolated test environment.");
+        QString error;
+        const QString defaults = QString::fromUtf8(Storage::read(defaultsPath, &error));
+        const auto native = MenuIntegration::parse(defaults, &error).value("appearance.background").toObject();
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QVERIFY(!native.isEmpty());
+        QTemporaryDir temp;
+        const QString menu = temp.filePath("menu.jsonc");
+        MenuIntegration::install(menu, menuFragment(), &error, native);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QJSEngine engine;
+        const auto evaluated = engine.evaluate(QString::fromUtf8(Storage::read(modelPath, &error)));
+        QVERIFY2(!evaluated.isError(), qPrintable(evaluated.toString()));
+        auto parse = engine.globalObject().property("parseMenuJsonc");
+        auto merge = engine.globalObject().property("mergeMenuSources");
+        const auto defaultRows = parse.call({QJSValue(defaults)});
+        const auto userRows = parse.call({QJSValue(QString::fromUtf8(Storage::read(menu, &error)))});
+        const auto result = merge.call({defaultRows, userRows}).property("items").property("appearance.background");
+        QCOMPARE(result.property("label").toString(), native.value("label").toString());
+        QCOMPARE(result.property("icon").toString(), native.value("icon").toString());
+        QCOMPARE(result.property("aliases").property("length").toInt(), 2);
+        QCOMPARE(result.property("action").toString(), QString("omarchy-aether background"));
+    }
     void stagingPreservesAnImageFromTheDirectoryBeingReplaced() {
         QTemporaryDir temp;
         const QString wallpaper = temp.filePath("sample.png");
@@ -439,6 +568,75 @@ private slots:
         QVERIFY(QJsonDocument::fromJson(output).object().value("valid").toBool());
         QVERIFY(!Storage::run(binary, {"apply", "--seed", "#ff66aa", "--json"}, &output, &error));
         QVERIFY(error.contains("--yes"));
+    }
+    void integrationCliUsesAnExplicitIsolatedConfigRoot() {
+        QTemporaryDir temp;
+        const QString binary = QCoreApplication::applicationDirPath() + "/../omarchy-aether";
+        QByteArray output;
+        QString error;
+        QVERIFY(!Storage::run(binary, {"integrate", "--json", "--config-dir", temp.path()}, &output, &error));
+        QVERIFY(error.contains("--yes"));
+        error.clear();
+        QVERIFY2(Storage::run(binary, {"integrate", "--yes", "--json", "--config-dir", temp.path()}, &output, &error), qPrintable(error));
+        QVERIFY(QJsonDocument::fromJson(output).object().value("changed").toBool());
+        const auto text = Storage::read(temp.filePath("omarchy/extensions/omarchy-menu.jsonc"), &error);
+        QVERIFY(MenuIntegration::parse(QString::fromUtf8(text), &error).contains("appearance.background"));
+    }
+    void nativeBackgroundKeepsOtherThemesOnTheStandardPath() {
+        QTemporaryDir temp;
+        const QString binary = QCoreApplication::applicationDirPath() + "/../omarchy-aether";
+        const QString state = temp.filePath("state/omarchy/current"), tools = temp.filePath("tools");
+        const QString chosen = temp.filePath("wallpaper with spaces.png"), log = temp.filePath("calls");
+        image(chosen);
+        write(state + "/theme.name", "tokyo-night\n");
+        executable(tools + "/omarchy", "#!/bin/sh\nprintf '%s\\0' \"$@\" >> '" + log.toUtf8()
+            + "'\nif [ \"$2\" = bg-switcher ]; then printf '%s\\n' '" + chosen.toUtf8() + "'; fi\n");
+        QProcess process;
+        auto env = QProcessEnvironment::systemEnvironment();
+        env.insert("PATH", tools + ":" + env.value("PATH"));
+        env.insert("XDG_STATE_HOME", temp.filePath("state"));
+        env.insert("XDG_CONFIG_HOME", temp.filePath("config"));
+        env.insert("XDG_CACHE_HOME", temp.filePath("cache"));
+        process.setProcessEnvironment(env);
+        process.start(binary, {"background", "--json"});
+        QVERIFY(process.waitForFinished(10000));
+        QVERIFY2(process.exitCode() == 0, process.readAllStandardError().constData());
+        QVERIFY(QJsonDocument::fromJson(process.readAllStandardOutput()).object().value("applied").toBool());
+        QString error;
+        const auto calls = Storage::read(log, &error);
+        QVERIFY(calls.contains(QByteArray("theme\0bg-switcher\0", 18)));
+        QVERIFY(calls.endsWith(chosen.toUtf8() + '\0'));
+        QVERIFY(!QFileInfo::exists(temp.filePath("config/omarchy/themes/aether")));
+    }
+    void nativeBackgroundDoesNotReactivateAetherAfterAThemeChange() {
+        QTemporaryDir temp;
+        const QString binary = QCoreApplication::applicationDirPath() + "/../omarchy-aether";
+        const QString tools = temp.filePath("tools"), state = temp.filePath("state/omarchy/current");
+        const QString cache = temp.filePath("cache/omarchy-aether"), wallpaper = temp.filePath("walls/sample.png");
+        image(wallpaper);
+        write(state + "/theme.name", "aether\n");
+        QVERIFY(QFile::link(wallpaper, state + "/background"));
+        QString error;
+        Catalog catalog(cache);
+        QVERIFY(catalog.index({temp.filePath("walls")}, &error));
+        const auto batch = catalog.prepare(35, wallpaper, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        const QString alias = batch.value("images").toArray().first().toObject().value("alias").toString();
+        executable(tools + "/omarchy-shell", "#!/bin/sh\nif [ \"$2\" = open ]; then printf '%s' '" + alias.toUtf8()
+            + "' > \"$6\"; printf '%s' tokyo-night > '" + (state + "/theme.name").toUtf8() + "'; touch \"$7\"; fi\necho ok\n");
+        executable(tools + "/omarchy", "#!/bin/sh\necho 'unexpected theme apply' >&2\nexit 1\n");
+        QProcess process;
+        auto env = QProcessEnvironment::systemEnvironment();
+        env.insert("PATH", tools + ":" + env.value("PATH"));
+        env.insert("XDG_STATE_HOME", temp.filePath("state"));
+        env.insert("XDG_CONFIG_HOME", temp.filePath("config"));
+        env.insert("XDG_CACHE_HOME", temp.filePath("cache"));
+        process.setProcessEnvironment(env);
+        process.start(binary, {"background", "--json"});
+        QVERIFY(process.waitForFinished(10000));
+        QCOMPARE(process.exitCode(), 1);
+        QVERIFY(process.readAllStandardError().contains("active theme changed"));
+        QVERIFY(!QFileInfo::exists(temp.filePath("config/omarchy/themes/aether")));
     }
 };
 

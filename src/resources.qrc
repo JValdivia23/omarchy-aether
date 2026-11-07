@@ -3,6 +3,7 @@
     <file alias="Main.qml">Main.qml</file>
     <file alias="AetherButton.qml">AetherButton.qml</file>
     <file alias="agent-skill.md">agent-skill.md</file>
+    <file alias="native-menu.json">../integration/omarchy-menu.json</file>
     <file alias="i18n/en.json">i18n/en.json</file>
     <file alias="i18n/da.json">i18n/da.json</file>
     <file alias="i18n/es-MX.json">i18n/es-MX.json</file>

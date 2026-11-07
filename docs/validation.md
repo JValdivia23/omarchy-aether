@@ -28,3 +28,12 @@ The Qt Test run reports **32 passed, zero failed** (including setup and cleanup)
 The carousel protocol is tested with an injected shell and checked against the installed Omarchy 4.5 image-selector IPC source. Automated tests do not open the user's real carousel, change keybindings, or apply a theme. A complete end-to-end desktop apply remains a user-approved acceptance test.
 
 These are opaque sRGB measurements. Applications can derive additional colors or introduce opacity; the generator cannot certify every rendered application state or every color-vision deficiency. Manual review of the system-derived application colors remains part of acceptance.
+
+## Native-menu integration in 0.2.0
+
+- The expanded local run reports **43 passed, zero failed**. The full user collection contains 1,642 supported images, and every indexed thumbnail was generated successfully. No source images or full-library caches are committed to the project.
+- Native theme registration includes a normal `preview.png` containing the selected wallpaper and its ANSI swatches, alongside `colors.toml` and its wallpaper. It does not replace the Theme menu action.
+- The Background override targets the installed `appearance.background` row, not the historical `style` alias. Native metadata is copied forward because Omarchy normalizes missing fields before merging.
+- The JSONC installer is tested for comments, literal comment-looking text inside strings, trailing commas, missing separators, backups, idempotence, malformed input, and protection of existing custom actions/symlinks.
+- The actual installed Omarchy JavaScript menu model is evaluated in Qt's JavaScript engine to verify the label, icon, aliases, and action after merging. That compatibility check is skipped on CI hosts without Omarchy; the portable metadata checks still run.
+- The native Background CLI is exercised with isolated state/config/cache roots and injected executables. Non-Aether themes follow the stock selector/setter path, and a theme change during Aether selection prevents unintended reactivation.

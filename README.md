@@ -2,7 +2,7 @@
 
 # Omarchy Aether
 
-Wallpaper atmosphere, Tokyo Night clarity. A small C++ / Qt Quick application and headless theme tool for Omarchy 4.5: Matugen extracts the wallpaper's character; Aether builds a readable, deliberately multicolored system palette.
+Wallpaper atmosphere, Tokyo Night clarity. An adaptive system theme for Omarchy 4.5, selectable from its normal **Appearance → Theme** menu. Matugen extracts the wallpaper's character; Aether builds a readable, deliberately multicolored system palette. The C++ / Qt Quick preview application is optional.
 
 **Early development.** Previewing, indexing, and warming caches never activate a theme. Applying is explicit. This project is separate from Omarchy's packaged `aether` application and does not replace it.
 
@@ -54,6 +54,23 @@ omarchy-aether generate --seed '#7aa2f7' --json
 
 All headless commands accept `--json`, exit 0 on success or 1 on failure, and report errors on stderr. A failing `check` still emits the full JSON check report. Contrast ratios describe opaque sRGB color pairs, not a certification of every application's derived/translucent colors. The color-separation floor is an engineering guardrail, not a guarantee for every form of color-vision deficiency.
 
+## Use Omarchy's normal menus
+
+Stage a first wallpaper and palette without activating them, then explicitly enable the native Background menu integration:
+
+```sh
+omarchy-aether apply --image /path/wallpaper.jpg --stage-only --json
+omarchy-aether integrate --yes --json
+```
+
+Now use **Omarchy → Appearance → Theme → Aether**. Aether is discovered from its normal user-theme directory and its generated `preview.png`; there is no separate Theme menu, custom Theme action, or need to open the GUI.
+
+With Aether active, **Appearance → Background** opens its fast native carousel and applies the selected wallpaper with its matching system palette. When another theme is active, that same menu action delegates to Omarchy's standard background selector/setter and preserves the static theme's colors. Changing themes while the picker is open cancels application rather than unexpectedly reactivating Aether.
+
+Integration changes the action of the existing `appearance.background` row in `~/.config/omarchy/extensions/omarchy-menu.jsonc`, carrying forward its native label, icon, and aliases because Omarchy normalizes omitted fields before merging. It preserves comments and unrelated settings, creates a dated backup, and is idempotent. Existing custom Background actions or symlink-managed menu files are protected and require an explicit manual merge. It checks the installed Omarchy menu ID before changing a real user menu; the historical `style` alias is not the `appearance` row ID. As with other explicit user-menu labels, its copied label takes precedence over stock translations.
+
+The action fragment is bundled in the binary and provided at `integration/omarchy-menu.json`. A version-controlled personal copy may live at `~/.config/omarchy-aether/menu.json` in the universal `core/` tier of your dotfiles; `integrate` reads that preference when present. An explicit `--fragment /path/menu.json` overrides its location. Isolated integration tests can use `--config-dir /path/sandbox`.
+
 ## Fast randomized wallpaper picker
 
 Keep the wallpaper repository separate. To fetch the full collection deliberately (several GB):
@@ -85,7 +102,7 @@ omarchy-aether pick --apply
 - No whole-library directory scan or palette extraction happens on a warm picker opening.
 - To cache the full indexed collection progressively at low CPU priority, run `omarchy-aether warm --json`. Run `index` again after syncing or changing files.
 
-Keyboard/menu/bar integration is deliberately opt-in. The common entry point is `omarchy-aether pick --apply`; this project never shadows the `omarchy` executable, replaces a packaged plugin, or silently rebinds your keys. In particular, Alt+Space may already be used for dictation.
+Menu integration is opt-in through `integrate --yes`. Its shared entry point is `omarchy-aether background`; an explicitly Aether-only shortcut can use `omarchy-aether pick --apply`. Keyboard/bar integration remains opt-in: this project never shadows the `omarchy` executable, replaces a packaged plugin, or silently rebinds your keys. In particular, Alt+Space may already be used for dictation. The existing bar background button remains stock unless separately configured.
 
 ## Apply a theme explicitly
 

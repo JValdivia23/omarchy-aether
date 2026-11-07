@@ -5,6 +5,9 @@
 #include <QFileInfo>
 #include <QJsonObject>
 #include <QLockFile>
+#include <QImageReader>
+#include <QPainter>
+#include <QSaveFile>
 #include <QTemporaryDir>
 
 ThemeInstaller::ThemeInstaller(QString config) : m_config(config.isEmpty() ? Storage::configRoot() : config) {}
@@ -37,6 +40,38 @@ bool ThemeInstaller::stage(const Palette &palette, const QString &image, QString
     // Stable library originals are linked; an already staged/current theme image is copied before replacement.
     if (!(transient ? QFile::copy(original, target) : QFile::link(original, target))) {
         *error = "Cannot preserve the original wallpaper in the theme.";
+        return false;
+    }
+    // The native Theme menu discovers preview.png without any custom menu or launcher.
+    QImageReader reader(original);
+    reader.setAutoTransform(true);
+    const QSize size = reader.size();
+    if (size.isValid()) reader.setScaledSize(size.scaled(1536, 864, Qt::KeepAspectRatio));
+    const QImage decoded = reader.read();
+    if (decoded.isNull()) { *error = "Cannot create the native theme preview: " + reader.errorString(); return false; }
+    QImage preview(1536, 864, QImage::Format_RGB32);
+    preview.fill(QColor(palette.colors.value("background")));
+    QPainter painter(&preview);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    QRectF crop(decoded.rect());
+    const double ratio = 1536.0 / 864;
+    if (crop.width() / crop.height() > ratio) {
+        const double width = crop.height() * ratio;
+        crop.setLeft((crop.width() - width) / 2);
+        crop.setWidth(width);
+    } else {
+        const double height = crop.width() / ratio;
+        crop.setTop((crop.height() - height) / 2);
+        crop.setHeight(height);
+    }
+    painter.drawImage(QRectF(0, 0, 1536, 864), decoded, crop);
+    const auto names = Palette::ansiNames();
+    for (int i = 0; i < names.size(); ++i)
+        painter.fillRect((i % 8) * 192, 768 + (i / 8) * 48, 192, 48, QColor(palette.colors.value(names[i])));
+    painter.end();
+    QSaveFile previewFile(temporary.filePath("preview.png"));
+    if (!previewFile.open(QIODevice::WriteOnly) || !preview.save(&previewFile, "PNG") || !previewFile.commit()) {
+        *error = "Cannot save the native theme preview.";
         return false;
     }
     const QString backup = temporary.path() + "-previous";

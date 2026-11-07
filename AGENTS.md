@@ -4,6 +4,7 @@
 - Keep C++ and QML in flat `src/`. C++ owns files, processes, palette logic, and error handling; QML owns layout and interaction. Use QGuiApplication, not QApplication.
 - The binary, package, desktop file, and Wayland app ID are `omarchy-aether`. The existing `aether` program belongs to a different installed package and must not be replaced.
 - Preserve the native Omarchy image carousel. `Picker` calls its existing IPC, not a modified packaged plugin. All integration with user shortcuts and menus is explicit and opt-in.
+- The normal Theme menu discovers the generated theme and `preview.png`. `integrate --yes` overrides the native `appearance.background` action, carrying its native label/icon/aliases forward because Omarchy normalizes missing fields before merging. Preserve comments/unrelated settings and refuse existing custom actions/symlink-managed files. `style` is a submenu alias, not the current native row ID.
 - Never change the active desktop theme, keybindings, language, app configuration, or original wallpapers as part of development or tests. Use temporary roots and injected tools. `apply --yes` is a user action, not a build step.
 - Read `/usr/share/omarchy` for compatibility, never edit it. Runtime theme generation belongs under the user's Omarchy theme directory and goes through native `omarchy theme set`.
 - Matugen must always run with `--dry-run`; a user's Matugen configuration may otherwise execute hooks or set wallpapers.

@@ -13,7 +13,7 @@ int main(int argc, char *argv[]) {
     if (!graphical) qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
     app.setApplicationName("omarchy-aether");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion("0.2.0");
     app.setDesktopFileName("omarchy-aether");
     app.setWindowIcon(QIcon::fromTheme("omarchy-aether"));
     if (!graphical) return runCli();

@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "catalog.h"
 #include "generator.h"
+#include "menuintegration.h"
 #include "picker.h"
 #include "storage.h"
 #include "themeinstaller.h"
@@ -24,13 +25,14 @@ int runCli() {
     parser.setApplicationDescription("Wallpaper-adaptive Omarchy palettes with verified contrast, distinct ANSI colors, and a fast native carousel.");
     parser.addHelpOption();
     parser.addVersionOption();
-    parser.addPositionalArgument("command", "open | generate | check | index | prepare | warm | pick | apply | skill install");
+    parser.addPositionalArgument("command", "open | generate | check | index | prepare | warm | pick | background | integrate | apply | skill install");
     parser.addPositionalArgument("paths", "Palette file, wallpaper directories, or 'install' for the skill command.", "[paths…]");
     parser.addOptions({{{"j", "json"}, "Output machine-readable JSON."},
                        {"image", "Wallpaper image.", "path"}, {"seed", "Generate from an explicit hex color instead of an image.", "hex"},
                        {{"o", "output"}, "Export colors.toml atomically to this file.", "path"},
                        {"cache-dir", "Use an isolated cache directory.", "path", Storage::cacheRoot()},
-                       {"config-dir", "Configuration root for stage-only exports.", "path", Storage::configRoot()},
+                       {"config-dir", "Configuration root for staging or explicit menu integration.", "path", Storage::configRoot()},
+                       {"fragment", "Native menu integration fragment (optional).", "path"},
                        {"count", "Number of random candidates, excluding the pinned wallpaper (1–200).", "number", "35"},
                        {"source-index", "Matugen source candidate index (0–3).", "number", "0"},
                        {"preload", "Preload prepared rows into the running Omarchy shell."},
@@ -61,6 +63,26 @@ int runCli() {
         }
         return Generator(cache).generate(parser.value("image"), &error, sourceIndex);
     };
+
+    if (command == "integrate") {
+        if (!parser.isSet("yes")) return fail("Menu integration changes the user menu. Re-run with --yes.");
+        const QString root = QDir(parser.value("config-dir")).absolutePath();
+        const QString preference = root + "/omarchy-aether/menu.json";
+        const QString source = parser.isSet("fragment") ? parser.value("fragment") : QFileInfo::exists(preference) ? preference : ":/native-menu.json";
+        const auto fragment = Storage::read(source, &error, 32768);
+        if (!error.isEmpty()) return fail(error);
+        QJsonObject nativeRow;
+        if (root == Storage::configRoot()) {
+            const QString defaults = qEnvironmentVariable("OMARCHY_PATH", "/usr/share/omarchy") + "/default/omarchy/omarchy-menu.jsonc";
+            const auto stock = MenuIntegration::parse(QString::fromUtf8(Storage::read(defaults, &error)), &error);
+            if (!error.isEmpty()) return fail(error);
+            if (!stock.contains("appearance.background")) return fail("The installed Omarchy Background menu ID is not supported; the user menu was not modified.");
+            nativeRow = stock.value("appearance.background").toObject();
+        }
+        const auto result = MenuIntegration::install(root + "/omarchy/extensions/omarchy-menu.jsonc", fragment, &error, nativeRow);
+        if (!error.isEmpty()) return fail(error);
+        return finish(result, result.value("changed").toBool() ? "Native Background menu integrated. The active theme is unchanged." : "Native Background menu already integrated.");
+    }
 
     if (command == "generate" || command == "apply") {
         if (command == "apply" && !parser.isSet("yes") && !parser.isSet("stage-only")) return fail("Applying changes the desktop. Re-run with --yes, or export with --stage-only.");
@@ -103,6 +125,25 @@ int runCli() {
     }
     Catalog catalog(cache);
     const QString current = QFileInfo(Storage::stateRoot() + "/background").canonicalFilePath();
+    const bool nativeBackground = command == "background";
+    QString backgroundTheme;
+    auto currentTheme = [&]() {
+        return QString::fromUtf8(Storage::read(Storage::stateRoot() + "/theme.name", &error, 4096)).trimmed();
+    };
+    if (nativeBackground) {
+        backgroundTheme = currentTheme();
+        if (!error.isEmpty()) return fail(error);
+        if (backgroundTheme != "aether") {
+            QByteArray output;
+            if (!Storage::run("omarchy", {"theme", "bg-switcher"}, &output, &error, -1)) return fail(error);
+            const QString selected = QString::fromUtf8(output).trimmed();
+            if (selected.isEmpty()) return finish({{"valid", true}, {"cancelled", true}}, "Selection canceled.");
+            if (currentTheme() != backgroundTheme) return fail("The active theme changed while the picker was open; nothing was applied.");
+            if (!error.isEmpty()) return fail(error);
+            if (!Storage::run("omarchy", {"theme", "bg", "set", selected}, &output, &error)) return fail(error);
+            return finish({{"valid", true}, {"wallpaper", selected}, {"applied", true}}, "Background applied; static theme colors were preserved.");
+        }
+    }
     if (command == "index") {
         if (!catalog.index(positional.mid(1), &error)) return fail(error);
         const int total = catalog.load(&error).value("images").toArray().size();
@@ -116,7 +157,7 @@ int runCli() {
         if (parser.isSet("preload") && !Picker(cache).preload(batch, current, &error)) return fail(error);
         return finish({{"valid", true}, {"count", batch.value("images").toArray().size()}}, "Wallpaper batch cached and ready.");
     }
-    if (command == "pick") {
+    if (command == "pick" || nativeBackground) {
         QDir().mkpath(cache);
         QLockFile lock(cache + "/picker.lock");
         if (!lock.tryLock(0)) return fail("The Aether picker is already open.");
@@ -136,7 +177,11 @@ int runCli() {
         if (!error.isEmpty()) return fail(error);
         const QString selected = Picker(cache).select(batch, current, &error);
         if (!error.isEmpty()) return fail(error);
-        if (!selected.isEmpty() && parser.isSet("apply")) {
+        const bool applySelection = parser.isSet("apply") || nativeBackground;
+        if (!selected.isEmpty() && nativeBackground && currentTheme() != "aether")
+            return fail("The active theme changed while the picker was open; nothing was applied.");
+        if (!error.isEmpty()) return fail(error);
+        if (!selected.isEmpty() && applySelection) {
             const auto palette = Generator(cache).generate(selected, &error, sourceIndex);
             if (!error.isEmpty() || !ThemeInstaller().apply(palette, selected, &error)) return fail(error);
         }
@@ -148,7 +193,7 @@ int runCli() {
         next.setStandardErrorFile(cache + "/preparation.log", QIODevice::Append);
         if (!next.startDetached()) return fail("The selection finished, but the next batch could not be scheduled.");
         return finish({{"valid", true}, {"wallpaper", selected}, {"cancelled", selected.isEmpty()},
-                       {"applied", !selected.isEmpty() && parser.isSet("apply")}}, selected);
+                       {"applied", !selected.isEmpty() && applySelection}}, selected);
     }
     if (command == "skill" && positional.value(1) == "install") {
         const QString target = QDir::homePath() + "/.agents/skills/omarchy-aether/SKILL.md";
